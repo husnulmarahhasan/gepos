@@ -13767,11 +13767,9 @@ license = stdenv.lib.licenses.mit;
 , ansi-wl-pprint
 , async
 , base
-, brick
 , bytestring
 , canonical-json
 , cardano-sl
-, cardano-sl-binary
 , cardano-sl-chain
 , cardano-sl-chain-test
 , cardano-sl-client
@@ -13783,7 +13781,6 @@ license = stdenv.lib.licenses.mit;
 , cardano-sl-infra
 , cardano-sl-networking
 , cardano-sl-util
-, cborg
 , conduit
 , constraints
 , containers
@@ -13792,13 +13789,10 @@ license = stdenv.lib.licenses.mit;
 , Earley
 , formatting
 , generic-arbitrary
-, ghc
-, ghc-paths
 , haskeline
 , hspec
 , hspec-discover
 , lens
-, lifted-async
 , loc
 , megaparsec
 , MonadRandom
@@ -13810,7 +13804,6 @@ license = stdenv.lib.licenses.mit;
 , QuickCheck
 , quickcheck-instances
 , random
-, reflection
 , resourcet
 , safe-exceptions
 , scientific
@@ -13827,8 +13820,6 @@ license = stdenv.lib.licenses.mit;
 , unliftio
 , unordered-containers
 , validation
-, vector
-, vty
 }:
 mkDerivation {
 
@@ -13851,7 +13842,6 @@ base
 bytestring
 canonical-json
 cardano-sl
-cardano-sl-binary
 cardano-sl-chain
 cardano-sl-chain-test
 cardano-sl-client
@@ -13862,7 +13852,6 @@ cardano-sl-db
 cardano-sl-generator
 cardano-sl-infra
 cardano-sl-util
-cborg
 conduit
 constraints
 containers
@@ -13870,8 +13859,6 @@ data-default
 Earley
 formatting
 generic-arbitrary
-ghc
-ghc-paths
 haskeline
 lens
 loc
@@ -13884,7 +13871,6 @@ parser-combinators
 QuickCheck
 quickcheck-instances
 random
-reflection
 resourcet
 safe-exceptions
 scientific
@@ -13899,49 +13885,24 @@ unix
 unliftio
 unordered-containers
 validation
-vector
 ];
 libraryToolDepends = [
 cpphs
 ];
 executableHaskellDepends = [
-ansi-wl-pprint
 base
-brick
-bytestring
 cardano-sl
-cardano-sl-binary
 cardano-sl-chain
-cardano-sl-client
 cardano-sl-core
-cardano-sl-crypto
 cardano-sl-db
-cardano-sl-generator
 cardano-sl-infra
 cardano-sl-networking
 cardano-sl-util
-cborg
-conduit
-constraints
-containers
-data-default
 formatting
-lens
-lifted-async
-mtl
 network-transport-tcp
-optparse-applicative
-reflection
-resourcet
 safe-exceptions
-serokell-util
-stm
 temporary
-text
-transformers
 universum
-unordered-containers
-vty
 ];
 executableToolDepends = [
 cpphs
