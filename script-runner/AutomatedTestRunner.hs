@@ -9,7 +9,7 @@
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE TypeApplications           #-}
 
-module AutomatedTestRunner (Example, getGenesisConfig, loadNKeys, doUpdate, onStartup, on, getScript, runScript) where
+module AutomatedTestRunner (Example, getGenesisConfig, loadNKeys, doUpdate, onStartup, on, getScript, runScript, ScriptRunnerOptions(..), endScript) where
 
 import           Brick hiding (on)
 import           Brick.BChan
@@ -29,14 +29,14 @@ import qualified Data.Map as Map
 import           Data.Reflection (Given, give, given)
 import qualified Data.Text as T
 import           Data.Version (showVersion)
-import           Formatting (Format, int, sformat, (%))
+import           Formatting (Format, int, sformat, (%), string)
 import           Graphics.Vty (defAttr, defaultConfig, mkVty)
 import           Ntp.Client (NtpConfiguration)
 import           Options.Applicative (Parser, execParser, footerDoc, fullDesc,
                      header, help, helper, info, infoOption, long, progDesc)
 import           Paths_cardano_sl (version)
-import           PocMode (AuxxContext (AuxxContext, acRealModeContext), PocMode,
-                     realModeToAuxx)
+import           PocMode (AuxxContext (AuxxContext, acRealModeContext, acEventChan), PocMode,
+                     realModeToAuxx, writeBrickChan)
 import           Pos.Chain.Block (LastKnownHeaderTag)
 import           Pos.Chain.Genesis as Genesis
                      (Config (configGeneratedSecrets, configProtocolMagic),
@@ -193,7 +193,7 @@ thing3 genesisConfig txpConfig inputParams nr = do
     toRealMode :: PocMode a -> RealMode EmptyMempoolExt a
     toRealMode auxxAction = do
       realModeContext <- ask
-      lift $ runReaderT auxxAction $ AuxxContext { acRealModeContext = realModeContext }
+      lift $ runReaderT auxxAction $ AuxxContext { acRealModeContext = realModeContext, acEventChan = ip2EventChan inputParams }
     thing2 :: Diffusion (RealMode ()) -> RealMode EmptyMempoolExt ()
     thing2 diffusion = toRealMode (thing5 (hoistDiffusion realModeToAuxx toRealMode diffusion))
     thing5 :: Diffusion PocMode -> PocMode ()
@@ -265,10 +265,11 @@ data TestScript a => InputParams2 a = InputParams2
   , ip2Script    :: a
   }
 
-runScript :: TestScript a => (HasEpochSlots => IO a) -> IO ()
-runScript scriptGetter = withCompileInfo $ do
+runScript :: (ScriptRunnerOptions -> IO ScriptRunnerOptions) -> TestScript a => (HasEpochSlots => IO a) -> IO ()
+runScript optionsMutator scriptGetter = withCompileInfo $ do
   (eventChan, replyChan, asyncUi) <- runUI
-  opts <- getScriptRunnerOptions
+  opts' <- getScriptRunnerOptions
+  opts <- optionsMutator opts'
   let
     inputParams = InputParams eventChan replyChan scriptGetter
     loggingParams = CLI.loggingParams loggerName (srCommonNodeArgs opts)
@@ -322,6 +323,11 @@ onStartup action = do
   put newsb
   pure ()
 
+endScript :: PocMode ()
+endScript = do
+  writeBrickChan QuitEvent
+  triggerShutdown
+
 on :: (Word64, Word16) -> (Dict HasConfigurations -> Diffusion PocMode -> PocMode ()) -> Example ()
 on (epoch, slot) action = do
   oldsb <- get
@@ -373,14 +379,14 @@ doUpdate diffusion genesisConfig keyIndex blockVersion softwareVersion blockVers
       putText (sformat ("Update proposal submitted along with votes, upId: "%hashHexF%"\n") upid)
     print updateProposal
 
-loadNKeys :: Integer -> PocMode ()
-loadNKeys n = do
+loadNKeys :: String -> Integer -> PocMode ()
+loadNKeys stateDir n = do
   let
-    fmt :: Format r (Integer -> r)
-    fmt = "../state-demo/generated-keys/rich/" % int % ".key"
+    fmt :: Format r (String -> Integer -> r)
+    fmt = string % "/genesis-keys/generated-keys/rich/key" % int % ".key"
     loadKey :: Integer -> PocMode ()
     loadKey x = do
-      secret <- readUserSecret (T.unpack $ sformat fmt x)
+      secret <- readUserSecret (T.unpack $ sformat fmt stateDir x)
       let
         sk = maybeToList $ secret ^. usPrimKey
         secret' = secret & usKeys %~ (++ map noPassEncrypt sk)

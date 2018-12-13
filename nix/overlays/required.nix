@@ -36,6 +36,7 @@ self: super: {
     mtl = null;
     stm = null;
     text = null;
+    parsec = null;
 
     ########################################################################
     # The base Haskell package builder

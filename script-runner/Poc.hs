@@ -12,7 +12,7 @@ import           Data.Default (def)
 import           Data.Ix (range)
 import           Formatting (Format, int, sformat, (%))
 import           NodeControl (NodeHandle, NodeType (..), genSystemStart,
-                     startNode, stopNode)
+                     startNode, stopNode, mkTopo, keygen, NodeInfo(..))
 import           PocMode
 import           Pos.Chain.Update (ApplicationName (ApplicationName),
                      BlockVersion (BlockVersion),
@@ -20,10 +20,18 @@ import           Pos.Chain.Update (ApplicationName (ApplicationName),
                      BlockVersionModifier, SoftwareVersion (SoftwareVersion))
 import           Pos.DB.Class (gsAdoptedBVData)
 import           Pos.Infra.Diffusion.Types (Diffusion)
-import           Pos.Launcher (HasConfigurations)
+import           Pos.Launcher (HasConfigurations, cfoSystemStart)
 import           Pos.Util.Wlog (logInfo)
 import           Serokell.Data.Memory.Units (Byte)
 import           Universum hiding (on)
+import qualified Turtle as T
+import qualified Data.Text as T
+import qualified Data.Aeson as A
+import qualified Data.ByteString.Lazy as BSL
+import qualified Pos.Client.CLI as CLI
+import           Pos.Core (Timestamp (..))
+import           Prelude (read)
+import           Data.Time.Units (fromMicroseconds)
 
 printbvd :: Dict HasConfigurations -> Diffusion PocMode -> PocMode ()
 printbvd Dict _diffusion = do
@@ -33,8 +41,8 @@ printbvd Dict _diffusion = do
   bar <- gsAdoptedBVData
   print $ sformat bvdfmt (bvdMaxTxSize bar) (bvdMaxBlockSize bar)
 
-test4 :: Example ()
-test4 = do
+test4 :: String -> Example ()
+test4 stateDir = do
   genesisConfig <- getGenesisConfig
   --on (82,19160) $ print "it is now epoch 0 slot 10"
   --on (82,19170) $ print "it is now epoch 0 slot 10"
@@ -52,23 +60,49 @@ test4 = do
         blockVersionModifier = def -- { bvmMaxTxSize = Just 131072 }
       doUpdate diffusion genesisConfig keyIndex blockVersion softwareVersion blockVersionModifier
       print ("done?"::String)
-  onStartup $ \Dict _diffusion -> loadNKeys 4
+  onStartup $ \Dict _diffusion -> loadNKeys stateDir 4
   on (1,10) proposal1
+  on (2,10) $ \Dict _diffusion -> do
+    endScript
   forM_ (range (0,20)) $ \epoch -> on(epoch, 0) printbvd
 
 main :: IO ()
 main = do
   systemStart <- genSystemStart 60
   let
-    createNodes :: IO [NodeHandle]
-    createNodes = do
-      corenodes <- forM (range (0,3)) $ \node -> startNode (Core node systemStart)
-      pure corenodes
-    cleanupNodes :: [NodeHandle] -> IO ()
-    cleanupNodes corenodes = do
+    systemStartTs :: Timestamp
+    systemStartTs = Timestamp $ fromMicroseconds $ (read systemStart) * 1000000
+    createNodes :: T.Text -> IO ([NodeHandle], [NodeHandle])
+    createNodes stateDir = do
+      let
+        path = stateDir <> "/topology.yaml"
+      BSL.writeFile (T.unpack path) blob
+      keygen systemStart stateDir
+      corenodes <- forM (range (0,3)) $ \node -> startNode (NodeInfo node Core systemStart stateDir path)
+      relays <- forM (range (0,0)) $ \node -> startNode (NodeInfo node Relay systemStart stateDir path)
+      pure (corenodes, relays)
+    cleanupNodes :: ([NodeHandle],[NodeHandle]) -> IO ()
+    cleanupNodes (corenodes, relays) = do
       logInfo "stopping all nodes"
       mapM_ stopNode corenodes
-    runScript' :: [NodeHandle] -> IO ()
-    runScript' _corenodes = do
-      runScript $ return $ getScript test4
-  bracket createNodes cleanupNodes runScript'
+      mapM_ stopNode relays
+    optionsMutator :: ScriptRunnerOptions -> IO ScriptRunnerOptions
+    optionsMutator optsin = do
+      print $ CLI.networkConfigOpts $ srCommonNodeArgs optsin
+      return $ optsin {
+          srCommonNodeArgs = (srCommonNodeArgs optsin) {
+            CLI.commonArgs = (CLI.commonArgs $ srCommonNodeArgs optsin) {
+              CLI.configurationOptions = (CLI.configurationOptions $ CLI.commonArgs $ srCommonNodeArgs optsin) {
+                cfoSystemStart = Just systemStartTs
+              }
+            }
+          }
+        }
+    runScript' :: String -> ([NodeHandle],[NodeHandle]) -> IO ()
+    runScript' stateDir (_,_) = do
+      runScript optionsMutator $ return $ getScript $ test4 stateDir
+    topo = mkTopo 3 0
+    blob :: BSL.ByteString
+    blob = A.encode topo
+  T.with (T.mktempdir "/tmp" "script-runner") $ \stateDir -> do
+    bracket (createNodes $ T.pack $ T.encodeString stateDir) cleanupNodes (runScript' $ T.encodeString stateDir)

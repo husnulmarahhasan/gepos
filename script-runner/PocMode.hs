@@ -20,6 +20,7 @@ module PocMode
 
        -- * Helpers
        , realModeToAuxx
+       , writeBrickChan
        ) where
 
 import           Universum
@@ -69,6 +70,8 @@ import           Pos.Util.LoggerName (HasLoggerName' (loggerName))
 import           Pos.Util.UserSecret (HasUserSecret (userSecret))
 import           Pos.Util.Wlog (HasLoggerName (askLoggerName, modifyLoggerName))
 import           Pos.WorkMode (EmptyMempoolExt, RealMode, RealModeContext)
+import           BrickUITypes (CustomEvent)
+import           Brick.BChan (BChan, writeBChan)
 
 type PocMode = ReaderT AuxxContext IO
 
@@ -77,9 +80,15 @@ instance (HasConfigurations, HasCompileInfo) => MonadPocMode PocMode
 
 data AuxxContext = AuxxContext
     { acRealModeContext :: !(RealModeContext EmptyMempoolExt)
+    , acEventChan :: !(BChan CustomEvent)
     }
 
 makeLensesWith postfixLFields ''AuxxContext
+
+writeBrickChan :: CustomEvent -> PocMode ()
+writeBrickChan event = do
+  chan <- view acEventChan_L
+  liftIO $ writeBChan chan event
 
 ----------------------------------------------------------------------------
 -- Helpers

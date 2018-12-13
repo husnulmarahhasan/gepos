@@ -17,11 +17,13 @@ executable poc
                         BlockParser
                         BrickUI
                         BrickUITypes
+                        NodeControl
                         PocMode
   default-language:    Haskell2010
   build-depends:        base
                       , ansi-wl-pprint
                       , brick
+                      , aeson
                       , bytestring
                       , cardano-sl
                       , cardano-sl-binary
@@ -39,6 +41,7 @@ executable poc
                       , constraints
                       , containers
                       , data-default
+                      , dns
                       , formatting
                       , lens
                       , lifted-async
@@ -51,11 +54,14 @@ executable poc
                       , stm
                       , text
                       , time
+                      , time-units
                       , transformers
+                      , turtle
                       , universum
                       , unix
                       , unordered-containers
                       , vty
+                      , yaml
   ghc-options:         -threaded -rtsopts
                        -Wall -Weverything
                        -Wno-unsafe -Wno-missing-import-lists
