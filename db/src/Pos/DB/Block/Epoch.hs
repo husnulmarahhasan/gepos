@@ -219,22 +219,15 @@ getConsolidatedSerBlund (SlotId ei lsi) = do
 -- -----------------------------------------------------------------------------
 
 data ConsolidateError
-    = CEFinalBlockNotBoundary !Text
-    | CEExpectedGenesis !Text !HeaderHash
-    | CEExcpectedMain !Text !HeaderHash
+    = CEExcpectedMain !Text !HeaderHash
     | CEForwardLink !Text !HeaderHash
     | CEEoSLookupFailed !Text !HeaderHash
     | CEBlockLookupFailed !Text !LocalSlotIndex !HeaderHash
-    | CEBOffsetFail !Text
-    | CEBlockMismatch !Text !LocalSlotIndex
     | CEBBlockNotFound !Text !LocalSlotIndex !HeaderHash
+    | CEUnexpectedSlotIndex !Text !LocalSlotIndex
 
 renderConsolidateError :: ConsolidateError -> Text
 renderConsolidateError = \case
-    CEFinalBlockNotBoundary fn ->
-        fn <> ": Final block is not an epoch boundary block"
-    CEExpectedGenesis fn h ->
-        fn <> sformat (": hash " % build % " should be an epoch boundary hash.") h
     CEExcpectedMain fn h ->
         fn <> sformat (": hash " % build % " should be a main block hash.") h
     CEForwardLink fn h ->
@@ -243,12 +236,10 @@ renderConsolidateError = \case
         fn <> sformat (": EpochOrSlot lookup failed on hash " % build) h
     CEBlockLookupFailed fn lsi h ->
         fn <> sformat (": block lookup failed on (" % build % ", " % build % ")") lsi h
-    CEBOffsetFail fn ->
-        fn <> ": Failed to find offset"
-    CEBlockMismatch fn lsi ->
-        fn <> sformat (": block mismatch at index " % build) lsi
     CEBBlockNotFound fn lsi hh ->
         fn <> sformat (": block mssing : " % build % " " % build) lsi hh
+    CEUnexpectedSlotIndex fn lsi ->
+        fn <> sformat (": expected slot index of 0, got " % build) lsi
 
 -- -----------------------------------------------------------------------------
 
@@ -415,36 +406,48 @@ consolidateEpochBlocks fpath xs = ExceptT $ do
                 pure . Right $ SlotIndexLength (getSlotIndex lsi)
                                 (fromIntegral $ LBS.length chunk)
 
--- | Given the hash of an epoch boundary block, return a pair of the next
--- epoch boundary hash and a list of the header hashes of the main blocks
--- between the two boundary blocks.
+-- | Get a list of headers for an epoch.
+-- This function is designed to work on both Ouroboros classic (Original)
+-- epochs and on Ouroboros BFT epochs. The only difference between these two
+-- epoch types from the point of view of block consolidation is that Original
+-- epochs start with an epoch boundary block (EBB) where as OBFT doesn't have
+-- EBBs.
+-- The inital header hash that is passed in should be the hash of either the
+-- EBB for Original or of the zeroth block in the case of OBFT.
 getEpochHeaderHashes
     :: MonadDBRead m
     => HeaderHash -> ExceptT ConsolidateError m (HeaderHash, [SlotIndexHash])
-getEpochHeaderHashes ghash = do
-    mbh <- isMainBlockHeader ghash
-    when mbh $
-        throwE $ CEExpectedGenesis "getEpochHeaderHashes" ghash
-    (ng, bhs) <- loop [] ghash
-    whenM (isMainBlockHeader ng) $
-        throwE $ CEFinalBlockNotBoundary "getEpochHeaderHashes"
-    pure (ng, reverse bhs)
+getEpochHeaderHashes startHash = do
+    -- Make sure the hash passed to the OBFT version is a Main block and not an
+    -- epoch boundary block.
+    next <- ifM (isMainBlockHeader startHash)
+                (pure startHash)
+                (maybe (throwE $ errorHash startHash) pure =<< resolveForwardLink startHash)
+
+    lsi <- getLocalSlotIndex next  -- should be zero
+    when (getSlotIndex lsi /= 0) $
+        throwE $ CEUnexpectedSlotIndex "getEpochHeaderHashes" lsi
+
+    ei <- getBlockHeaderEpoch next
+    (nh, bhs) <- loop ei [SlotIndexHash lsi next] next
+    pure (nh, reverse bhs)
   where
     loop
         :: MonadDBRead m
-        => [SlotIndexHash] -> HeaderHash
+        => EpochIndex -> [SlotIndexHash] -> HeaderHash
         -> ExceptT ConsolidateError m (HeaderHash, [SlotIndexHash])
-    loop !acc hash = do
+    loop currentEpoch !acc hash = do
         mnext <- resolveForwardLink hash
         next <- maybe (throwE $ errorHash hash) pure mnext
-        ifM (not <$> isMainBlockHeader next)
-            (pure (next, acc))
-            (do lsi <- getLocalSlotIndex next
-                loop (SlotIndexHash lsi next : acc) next
-                )
+        nei <- getBlockHeaderEpoch next
+        if nei /= currentEpoch
+            then pure (next, acc)
+            else do
+                lsi <- getLocalSlotIndex next
+                loop currentEpoch (SlotIndexHash lsi next : acc) next
 
-    errorHash hash =
-        CEForwardLink "getEpochHeaderHashes" hash
+    errorHash =
+        CEForwardLink "getEpochHeaderHashes"
 
 getLocalSlotIndex
     :: MonadDBRead m
