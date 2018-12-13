@@ -2,7 +2,7 @@ dist/build/poc/poc: AutomatedTestRunner.hs BlockParser.hs Poc.hs BrickUI.hs Node
 	runhaskell Setup.hs build -j10 poc
 
 poc-test: dist/build/poc/poc
-	mkdir -p ~/dedup/poc-state
-	./dist/build/poc/poc --configuration-file ../lib/configuration.yaml --log-console-off --db-path ~/dedup/poc-state/db --keyfile ~/dedup/poc-state/secret.key --log-config ../log-configs/connect-to-cluster.yaml --logs-prefix ~/dedup/poc-state/logs/ --topology topology-local.yaml
+	mkdir -p poc-state
+	./dist/build/poc/poc --configuration-file ../lib/configuration.yaml --log-console-off --db-path poc-state/db --keyfile poc-state/secret.key --log-config log-config.yaml --logs-prefix poc-state/logs/ --topology topology-local.yaml
 
 .PHONY: poc-test
