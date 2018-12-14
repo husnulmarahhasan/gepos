@@ -19,13 +19,18 @@ import           Network.Wai.Handler.Warp (defaultSettings,
 import qualified Paths_cardano_sl_node as Paths
 import           Servant
 
+import           Cardano.Node.NodeStateAdaptor (NodeStateAdaptor, getFeePolicy,
+                     getMaxTxSize, getSecurityParameter, getSlotCount,
+                     getTipSlotId, newNodeStateAdaptor)
 import           Cardano.NodeIPC (startNodeJsIPC)
 import           Ntp.Client (NtpConfiguration, NtpStatus (..),
                      ntpClientSettings, withNtpClient)
 import           Ntp.Packet (NtpOffset)
 import           Pos.Chain.Block (LastKnownHeader, LastKnownHeaderTag)
+import qualified Pos.Chain.Genesis as Genesis
 import           Pos.Chain.Ssc (SscContext)
-import           Pos.Chain.Update (UpdateConfiguration, curSoftwareVersion)
+import           Pos.Chain.Update (UpdateConfiguration, curSoftwareVersion,
+                     withUpdateConfiguration)
 import           Pos.Client.CLI.NodeOptions (NodeApiArgs (..))
 import           Pos.Context (HasPrimaryKey (..), HasSscContext (..),
                      NodeContext (..))
@@ -46,6 +51,7 @@ import qualified Pos.Infra.Slotting.Util as Slotting
 import           Pos.Launcher.Resource (NodeResources (..))
 import           Pos.Node.API as Node
 import           Pos.Util (HasLens (..), HasLens')
+import           Pos.Util.CompileInfo (withCompileInfo)
 import           Pos.Util.CompileInfo (CompileTimeInfo, ctiGitRevision)
 import           Pos.Util.Lens (postfixLFields)
 import           Pos.Util.Servant (APIResponse (..), JsendException (..),
@@ -114,6 +120,7 @@ launchNodeServer
     -> NodeResources ()
     -> UpdateConfiguration
     -> CompileTimeInfo
+    -> Genesis.Config
     -> Diffusion IO
     -> IO ()
 launchNodeServer
@@ -122,6 +129,7 @@ launchNodeServer
     nodeResources
     updateConfiguration
     compileTimeInfo
+    genesisConfig
     diffusion
   = do
     ntpStatus <- withNtpClient (ntpClientSettings ntpConfig)
@@ -137,6 +145,13 @@ launchNodeServer
             , legacyCtxNodeDBs =
                 nrDBs nodeResources
             }
+
+    let nodeStateAdaptor = withUpdateConfiguration updateConfiguration
+                         $ withCompileInfo
+                         $ newNodeStateAdaptor
+                             genesisConfig
+                             nodeResources
+
     let app = serve nodeV1Api
             $ handlers
                 diffusion
@@ -149,6 +164,7 @@ launchNodeServer
                 updateConfiguration
                 compileTimeInfo
                 shutdownCtx
+                nodeStateAdaptor
             :<|> legacyApi
 
     concurrently_
@@ -198,10 +214,12 @@ handlers
     -> UpdateConfiguration
     -> CompileTimeInfo
     -> ShutdownContext
+    -> NodeStateAdaptor IO
     -> ServerT Node.API Handler
-handlers d t s n l ts sv uc ci sc =
+handlers d t s n l ts sv uc ci sc ns =
     getNodeSettings ci uc ts sv
     :<|> getNodeInfo d t s n l
+    :<|> getProtocolParameters ns
     :<|> applyUpdate sc
     :<|> postponeUpdate
 
@@ -244,6 +262,20 @@ applyUpdate shutdownCtx = liftIO $ do
     doFail <- testLogFInject (_shdnFInjects shutdownCtx) FInjApplyUpdateNoExit
     unless doFail (runReaderT triggerShutdown shutdownCtx)
     pure NoContent
+
+getProtocolParameters
+    :: NodeStateAdaptor IO
+    -> Handler (APIResponse Node.ProtocolParameters)
+getProtocolParameters ns = do
+    pp <- liftIO $ ProtocolParameters
+                <$> (getTipSlotId ns)
+                <*> (getMaxTxSize ns)
+                <*> (getFeePolicy ns)
+                <*> (getSecurityParameter ns)
+                <*> (getSlotCount ns)
+    pure $ single pp
+    where
+
 
 -- | In the old implementation, we would delete the new update from the
 -- acid-stae database. We no longer persist this information, so postponing an

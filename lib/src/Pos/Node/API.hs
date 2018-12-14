@@ -31,6 +31,7 @@ import           GHC.Generics (Generic, Rep)
 import qualified Network.Transport as NT
 import           Node (NodeId (..))
 import qualified Prelude
+import           Serokell.Data.Memory.Units (Byte)
 import           Servant
 import           Test.QuickCheck
 import           Text.ParserCombinators.ReadP (readP_to_S)
@@ -590,6 +591,39 @@ instance BuildableSafeGen NodeSettings where
         setGitRevision
 
 
+newtype SecurityParameter = SecurityParameter Int
+    deriving (Generic, ToJSON, FromJSON)
+
+data ProtocolParameters = ProtocolParameters
+    { slotId            :: Core.SlotId
+    , maxTxSize         :: Byte
+    , feePolicy         :: Core.TxFeePolicy
+    , securityParameter :: SecurityParameter
+    , slotCount         :: Core.SlotCount
+    --, coreConfig        :: Genesis.Config
+    } deriving (Generic)
+
+deriveSafeBuildable ''ProtocolParameters
+instance BuildableSafeGen ProtocolParameters where
+    buildSafeGen _ ProtocolParameters{..} = bprint ("{"
+        %" slotId="%build
+--        %" maxTxSize="%build
+        %" feePolicy="%build
+--        %" securityParameter="%build
+        %" slotCount="%build
+        %" }")
+        slotId
+--        maxTxSize
+        feePolicy
+--      securityParameter
+        slotCount
+
+instance ToJSON ProtocolParameters
+instance FromJSON ProtocolParameters
+
+instance ToSchema ProtocolParameters where
+    declareNamedSchema = error "TODO"
+
 type SettingsAPI =
     Tags '["Settings"]
         :> "node-settings"
@@ -606,12 +640,21 @@ type InfoAPI =
 instance HasCustomQueryFlagDescription "force_ntp_check" where
     customDescription _ = Just forceNtpCheckDescription
 
+
+type ProtocolParametersAPI =
+        Tags '["ProtocolParameters"]
+            :> "protocol-parameters"
+            :> Summary "Retrieves epoch-specific protocol parametes for this node."
+            :> Get '[ValidJSON] (APIResponse ProtocolParameters)
+
 -- The API definition is down here for now due to TH staging restrictions. Will
 -- relocate other stuff into it's own module when the extraction is complete.
 type API =
         SettingsAPI
     :<|>
         InfoAPI
+    :<|>
+        ProtocolParametersAPI
     :<|>
         "update"
             :> ( "apply"

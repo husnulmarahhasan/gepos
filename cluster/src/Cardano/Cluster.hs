@@ -113,7 +113,8 @@ startNode (NodeName nodeIdT, nodeType) env = do
                         ntpC
                         resC
                         updateConfiguration
-                        compileInfo)
+                        compileInfo
+                        genC)
                     genC
                     walC
                     txpC

@@ -26,7 +26,8 @@ import qualified Servant.Client as Servant
 
 import           Cardano.Node.API (nodeV1Api)
 import           Pos.Chain.Txp (Utxo)
-import           Pos.Node.API (ForceNtpCheck, NodeInfo, NodeSettings)
+import           Pos.Node.API (ForceNtpCheck, NodeInfo, NodeSettings,
+                     ProtocolParameters)
 import           Pos.Util.Jsend (ResponseStatus (..))
 import           Pos.Util.Servant (APIResponse (..))
 import           Pos.Web.Types (CConfirmedProposalState)
@@ -44,6 +45,9 @@ data NodeClient m
 
     , getNodeSettings
         :: m NodeSettings
+
+    , getProtocolParameters
+        :: m ProtocolParameters
 
     , getNodeInfo
         :: ForceNtpCheck
@@ -101,6 +105,8 @@ mkHttpClient baseUrl manager = NodeClient
         run getConfirmedProposalsR
     , getNodeSettings =
         fmap wrData $ run getNodeSettingsR
+    , getProtocolParameters =
+        fmap wrData $ run getProtocolParametersR
     , getNodeInfo =
         fmap wrData . run . getNodeInfoR
     , applyUpdate =
@@ -118,6 +124,7 @@ mkHttpClient baseUrl manager = NodeClient
 
     (       getNodeSettingsR
      :<|>   getNodeInfoR
+     :<|>   getProtocolParametersR
      :<|>   applyUpdateR
      :<|>   postponeUpdateR
      ):<|>( getUtxoR
