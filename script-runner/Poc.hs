@@ -17,7 +17,7 @@ import           PocMode
 import           Pos.Chain.Update (ApplicationName (ApplicationName),
                      BlockVersion (BlockVersion),
                      BlockVersionData (bvdMaxBlockSize, bvdMaxTxSize),
-                     BlockVersionModifier, SoftwareVersion (SoftwareVersion))
+                     BlockVersionModifier(bvmMaxTxSize), SoftwareVersion (SoftwareVersion))
 import           Pos.DB.Class (gsAdoptedBVData)
 import           Pos.Infra.Diffusion.Types (Diffusion)
 import           Pos.Launcher (HasConfigurations, cfoSystemStart_L)
@@ -44,10 +44,6 @@ printbvd Dict _diffusion = do
 test4 :: String -> Example ()
 test4 stateDir = do
   genesisConfig <- getGenesisConfig
-  --on (82,19160) $ print "it is now epoch 0 slot 10"
-  --on (82,19170) $ print "it is now epoch 0 slot 10"
-  --on (82,19180) $ print "it is now epoch 0 slot 10"
-  --on (82,19200) $ print "it is now epoch 0 slot 20"
   let
     proposal1 :: Dict HasConfigurations -> Diffusion PocMode -> PocMode ()
     proposal1 Dict diffusion = do
@@ -68,18 +64,22 @@ test4 stateDir = do
 
 main :: IO ()
 main = do
-  systemStart <- genSystemStart 60
+  systemStart <- genSystemStart 10
   let
+    -- cores run from 0-3, relays run from 0-0
+    topo = mkTopo 3 0
     systemStartTs :: Timestamp
     systemStartTs = Timestamp $ fromMicroseconds $ (read systemStart) * 1000000
-    createNodes :: T.Text -> IO ([NodeHandle], [NodeHandle])
-    createNodes stateDir = do
+    createNodes :: T.Text -> ScriptRunnerOptions -> IO ([NodeHandle], [NodeHandle])
+    createNodes stateDir opts = do
       let
         path = stateDir <> "/topology.yaml"
-      BSL.writeFile (T.unpack path) blob
-      keygen systemStart stateDir
-      corenodes <- forM (range (0,3)) $ \node -> startNode (NodeInfo node Core systemStart stateDir path)
-      relays <- forM (range (0,0)) $ \node -> startNode (NodeInfo node Relay systemStart stateDir path)
+        -- the config for the script-runner is mirrored to the nodes it starts
+        cfg = opts ^. srCommonNodeArgs_L . CLI.commonArgs_L
+      BSL.writeFile (T.unpack path) (A.encode topo)
+      keygen (cfg ^. CLI.configurationOptions_L)  stateDir
+      corenodes <- forM (range (0,3)) $ \node -> startNode (NodeInfo node Core stateDir path cfg)
+      relays <- forM (range (0,0)) $ \node -> startNode (NodeInfo node Relay stateDir path cfg)
       pure (corenodes, relays)
     cleanupNodes :: ([NodeHandle],[NodeHandle]) -> IO ()
     cleanupNodes (corenodes, relays) = do
@@ -88,18 +88,17 @@ main = do
       mapM_ stopNode relays
     optionsMutator :: ScriptRunnerOptions -> IO ScriptRunnerOptions
     optionsMutator optsin = do
-      print $ CLI.networkConfigOpts $ srCommonNodeArgs optsin
+      -- sets the systemStart inside the ScriptRunnerOptions to the systemStart generated at the start of main
       return $ optsin
              & srCommonNodeArgs_L
              . CLI.commonArgs_L
              . CLI.configurationOptions_L
              . cfoSystemStart_L
              .~ Just systemStartTs
-    runScript' :: String -> ([NodeHandle],[NodeHandle]) -> IO ()
-    runScript' stateDir (_,_) = do
-      runScript optionsMutator $ return $ getScript $ test4 stateDir
-    topo = mkTopo 3 0
-    blob :: BSL.ByteString
-    blob = A.encode topo
+    scriptGetter :: HasEpochSlots => String -> ([NodeHandle], [NodeHandle]) -> IO Script
+    scriptGetter stateDir (_cores, _relays) = return $ getScript $ test4 stateDir
+    runScript' :: String -> IO ()
+    runScript' stateDir = do
+      runScript (createNodes $ T.pack stateDir) cleanupNodes optionsMutator (scriptGetter stateDir)
   T.with (T.mktempdir "/tmp" "script-runner") $ \stateDir -> do
-    bracket (createNodes $ T.pack $ T.encodeString stateDir) cleanupNodes (runScript' $ T.encodeString stateDir)
+    runScript' $ T.encodeString stateDir

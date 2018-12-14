@@ -1,6 +1,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TypeApplications #-}
 
 module NodeControl (NodeHandle, NodeControl.NodeType(..), startNode, stopNode, genSystemStart, mkTopo, keygen, NodeInfo(..)) where
 
@@ -19,14 +20,19 @@ import qualified Data.Text as T
 import           Data.Ix (range)
 import Network.Broadcast.OutboundQueue (MaxBucketSize(BucketSizeUnlimited))
 import Network.DNS.Types (Domain)
+import           Pos.Launcher (cfoSystemStart_L, cfoFilePath_L, ConfigurationOptions)
+import           Pos.Core.Slotting (Timestamp, getTimestamp)
+import           Data.Time.Units (Second, convertUnit)
+import qualified Pos.Client.CLI as CLI
 
 data NodeHandle = NodeHandle (Async ()) ProcessHandle
 data NodeInfo = NodeInfo
             { niIndex :: Integer
             , niType :: NodeControl.NodeType
-            , niSystemStart :: String
             , stateRoot :: Text
-            , topoPath :: Text }
+            , topoPath :: Text
+            , niCfgFilePath :: CLI.CommonArgs
+            }
 data NodeType = Core | Relay
 
 startingPortOffset :: Num i => NodeControl.NodeType -> i
@@ -57,7 +63,7 @@ mkTopo cores relays = do
         mkRoute x = [ NodeName ("core-" <> show x) ]
         nmRoutes = case typ of
           Core -> NodeRoutes [ [ NodeName "relay-0" ] ]
-          Relay -> NodeRoutes $ map mkRoute (filter (\x -> x /= idx) $ range (0,cores))
+          Relay -> NodeRoutes $ map mkRoute $ range (0,cores)
       NodeMetadata{..}
     mkCoreTup :: Integer -> (NodeName, NodeMetadata)
     mkCoreTup idx = (NodeName $ T.pack $ "core-" <> (show idx), mkNodeMeta idx Core)
@@ -73,14 +79,26 @@ typeToString Core = "core"
 typeToString Relay = "relay"
 
 commonNodeParams :: NodeInfo -> [ String ]
-commonNodeParams (NodeInfo idx typ systemStart stateRoot topoPath) = [
-    "--configuration-file", "../lib/configuration.yaml"
-  , "--system-start", systemStart
+commonNodeParams (NodeInfo idx typ stateRoot topoPath cfg) = [
+    "--configuration-file", cfg ^. CLI.configurationOptions_L . cfoFilePath_L
   , "--topology", T.unpack topoPath
   , "--db-path", (T.unpack stateRoot) <> "/poc-state/" <> (typeToString typ) <> (show idx) <> "-db"
   , "--node-id", (typeToString typ) <> "-" <> (show idx)
   , "--node-api-address", "127.0.0.1:" <> show (startingPortOffset typ + 8083 + idx)
-  ]
+  , "--no-tls"
+  , "--node-doc-address", "127.0.0.1:" <> show (startingPortOffset typ + 8180 + idx)
+  , "--json-log", "poc-state/" <> typeToString typ <> show idx <> ".json"
+  , "--logs-prefix", "poc-state/logs-" <> typeToString typ <> show idx
+  ] <> (maybeSystemStart $ cfg ^. CLI.configurationOptions_L . cfoSystemStart_L)
+  <> (maybeLogConfig $ cfg ^. CLI.logConfig_L)
+
+maybeSystemStart :: Maybe Timestamp -> [ String ]
+maybeSystemStart Nothing = []
+maybeSystemStart (Just ts) = [ "--system-start", show $ fromIntegral @Second (convertUnit $ getTimestamp ts) ]
+
+maybeLogConfig :: Maybe FilePath -> [ String ]
+maybeLogConfig Nothing = []
+maybeLogConfig (Just logconfig) = [ "--log-config", logconfig ]
 
 commonNodeStart :: String -> [ String ] -> NodeControl.NodeType -> Integer -> IO NodeHandle
 commonNodeStart prog args typ idx = do
@@ -95,14 +113,14 @@ commonNodeStart prog args typ idx = do
   pure $ NodeHandle later ph
 
 startNode :: NodeInfo -> IO NodeHandle
-startNode info@(NodeInfo idx Core _systemStart stateRoot _topoPath) = do
+startNode info@(NodeInfo idx Core stateRoot _topoPath _cfg) = do
   let
     params = (commonNodeParams info) <>
              [ "--keyfile", T.unpack (stateRoot <> "/genesis-keys/generated-keys/rich/key" <> (show idx) <> ".sk")
              , "--listen", "127.0.0.1:" <> show (startingPortOffset Core + idx + 3000)
              ]
   commonNodeStart "cardano-node-simple" params Core idx
-startNode info@(NodeInfo idx Relay _systemStart stateRoot _topoPath) = do
+startNode info@(NodeInfo idx Relay stateRoot _topoPath _cfg) = do
   let
     params = (commonNodeParams info) <>
              [ "--keyfile", T.unpack (stateRoot <> "/relay" <> (show idx) <> ".sk")
@@ -122,14 +140,13 @@ stopNode (NodeHandle _async ph) = do
 genSystemStart :: NominalDiffTime -> IO String
 genSystemStart offset = formatTime defaultTimeLocale "%s" . addUTCTime offset <$> getCurrentTime
 
-keygen :: String -> Text -> IO ()
-keygen systemStart stateRoot = do
+keygen :: ConfigurationOptions -> Text -> IO ()
+keygen cfg stateRoot = do
   let
-    params = [ "--system-start", systemStart
-             , "generate-keys-by-spec"
+    params = [ "generate-keys-by-spec"
              , "--genesis-out-dir", T.unpack (stateRoot <> "/genesis-keys")
-             , "--configuration-file", "../lib/configuration.yaml"
-             ]
+             , "--configuration-file", cfg ^. cfoFilePath_L
+             ] <> (maybeSystemStart $ cfg ^. cfoSystemStart_L)
     pc :: CreateProcess
     pc = proc "cardano-keygen" params
   (_stdin, _stdout, _stderr, ph) <- createProcess pc

@@ -10,7 +10,7 @@
 {-# LANGUAGE TypeApplications           #-}
 {-# LANGUAGE TemplateHaskell       #-}
 
-module AutomatedTestRunner (Example, getGenesisConfig, loadNKeys, doUpdate, onStartup, on, getScript, runScript, ScriptRunnerOptions(..), endScript, srCommonNodeArgs_L) where
+module AutomatedTestRunner (Example, getGenesisConfig, loadNKeys, doUpdate, onStartup, on, getScript, runScript, ScriptRunnerOptions(..), endScript, srCommonNodeArgs_L, Script, HasEpochSlots) where
 
 import           Brick hiding (on)
 import           Brick.BChan
@@ -34,7 +34,7 @@ import           Formatting (Format, int, sformat, (%), string)
 import           Graphics.Vty (defAttr, defaultConfig, mkVty)
 import           Ntp.Client (NtpConfiguration)
 import           Options.Applicative (Parser, execParser, footerDoc, fullDesc,
-                     header, help, helper, info, infoOption, long, progDesc)
+                     header, help, helper, info, infoOption, long, progDesc, switch)
 import           Paths_cardano_sl (version)
 import           PocMode (AuxxContext (AuxxContext, acRealModeContext, acEventChan), PocMode,
                      realModeToAuxx, writeBrickChan)
@@ -75,12 +75,16 @@ import           Pos.Util.Wlog (LoggerName)
 import           Pos.WorkMode (EmptyMempoolExt, RealMode)
 import           Prelude (show)
 import           Universum hiding (on, state, when)
-import           Control.Lens (lens, makeLensesWith)
-import           Pos.Util (HasLens (lensOf), postfixLFields)
+import           Control.Lens (makeLensesWith)
+import           Pos.Util (postfixLFields)
+import           System.IO (hSetBuffering, BufferMode(LineBuffering), hPrint)
+
+data ScriptRunnerUIMode = BrickUI | PrintUI deriving Show
 
 data ScriptRunnerOptions = ScriptRunnerOptions
   { srCommonNodeArgs :: !CLI.CommonNodeArgs -- ^ Common CLI args for nodes
   , srPeers          :: ![NodeId]
+  , srUiMode         :: !ScriptRunnerUIMode
   } deriving Show
 
 makeLensesWith postfixLFields ''ScriptRunnerOptions
@@ -133,9 +137,13 @@ withEpochSlots epochSlots genesisConfig = give (EpochSlots epochSlots genesisCon
 
 scriptRunnerOptionsParser :: Parser ScriptRunnerOptions
 scriptRunnerOptionsParser = do
+  let
+    disabledParser :: Parser Bool
+    disabledParser = switch $ long "no-brickui" <> help "Disable brick based ui"
+  disableBrick <- disabledParser
   srCommonNodeArgs <- CLI.commonNodeArgsParser
   srPeers <- many $ CLI.nodeIdOption "peer" "Address of a peer."
-  pure ScriptRunnerOptions{srCommonNodeArgs,srPeers}
+  pure ScriptRunnerOptions{srCommonNodeArgs,srPeers,srUiMode = if disableBrick then PrintUI else BrickUI}
 
 getScriptRunnerOptions :: HasCompileInfo => IO ScriptRunnerOptions
 getScriptRunnerOptions = execParser programInfo
@@ -180,7 +188,7 @@ runWithConfig ScriptRunnerOptions{srCommonNodeArgs,srPeers} inputParams genesisC
     nArgs = CLI.NodeArgs { CLI.behaviorConfigPath = Nothing}
   (nodeParams', _mSscParams) <- CLI.getNodeParams loggerName srCommonNodeArgs nArgs (configGeneratedSecrets genesisConfig)
   let
-    nodeParams = addQueuePolicies $ maybeAddPeers srPeers $ nodeParams'
+    nodeParams = maybeAddPeers srPeers $ nodeParams'
     epochSlots = configEpochSlots genesisConfig
     vssSK = fromMaybe (error "no user secret given") (npUserSecret nodeParams ^. usVss)
     sscParams = CLI.gtSscParams srCommonNodeArgs vssSK (npBehaviorConfig nodeParams)
@@ -234,7 +242,7 @@ worker2 eventChan diffusion = do
     f Nothing  = Nothing
   liftIO $ do
     writeBChan eventChan $ CENodeInfo $ NodeInfo (getBlockCount localHeight) (getEpochOrSlot localTip) (f globalHeight)
-    threadDelay 100000
+    threadDelay 10000000
   worker2 eventChan diffusion
 
 worker1 :: (HasConfigurations, TestScript a) => Genesis.Config -> a -> BChan CustomEvent -> Diffusion (PocMode) -> PocMode ()
@@ -270,21 +278,52 @@ data TestScript a => InputParams2 a = InputParams2
   , ip2Script    :: a
   }
 
-runScript :: (ScriptRunnerOptions -> IO ScriptRunnerOptions) -> TestScript a => (HasEpochSlots => IO a) -> IO ()
-runScript optionsMutator scriptGetter = withCompileInfo $ do
-  (eventChan, replyChan, asyncUi) <- runUI
+runScript :: TestScript a => (ScriptRunnerOptions -> IO b) -> (b -> IO ()) -> (ScriptRunnerOptions -> IO ScriptRunnerOptions) -> (HasEpochSlots => b -> IO a) -> IO ()
+runScript initialize finalize optionsMutator scriptGetter = withCompileInfo $ do
   opts' <- getScriptRunnerOptions
   opts <- optionsMutator opts'
+  (eventChan, replyChan, asyncUi) <- runUI' opts
   let
-    inputParams = InputParams eventChan replyChan scriptGetter
     loggingParams = CLI.loggingParams loggerName (srCommonNodeArgs opts)
   loggerBracket "script-runner" loggingParams . logException "script-runner" $ do
+    b <- initialize opts
+    let
+      inputParams = InputParams eventChan replyChan (scriptGetter b)
     thing opts inputParams
+    finalize b
     pure ()
   liftIO $ writeBChan eventChan QuitEvent
   finalState <- wait asyncUi
   --print finalState
   pure ()
+
+runUI' :: ScriptRunnerOptions -> IO (BChan CustomEvent, BChan Reply, Async AppState)
+runUI' opts = do
+  case opts ^. srUiMode_L of
+    BrickUI -> runUI
+    PrintUI -> runDummyUI
+
+runDummyUI :: IO (BChan CustomEvent, BChan Reply, Async AppState)
+runDummyUI = do
+  hSetBuffering stdout LineBuffering
+  eventChan <- newBChan 10
+  replyChan <- newBChan 10
+  let
+    state :: AppState
+    state = AppState 0 Nothing "" Nothing replyChan
+    go :: IO AppState
+    go = do
+      reply <- liftIO $ readBChan eventChan
+      case reply of
+        QuitEvent -> pure state
+        CESlotStart x -> do
+          print x
+          go
+        CENodeInfo x -> do
+          print x
+          go
+  fakesync <- async go
+  pure (eventChan, replyChan, fakesync)
 
 runUI :: IO (BChan CustomEvent, BChan Reply, Async AppState)
 runUI = do
@@ -388,10 +427,12 @@ loadNKeys :: String -> Integer -> PocMode ()
 loadNKeys stateDir n = do
   let
     fmt :: Format r (String -> Integer -> r)
-    fmt = string % "/genesis-keys/generated-keys/rich/key" % int % ".key"
+    fmt = string % "/genesis-keys/generated-keys/rich/key" % int % ".sk"
     loadKey :: Integer -> PocMode ()
     loadKey x = do
-      secret <- readUserSecret (T.unpack $ sformat fmt stateDir x)
+      let
+        keypath = sformat fmt stateDir x
+      secret <- readUserSecret (T.unpack keypath)
       let
         sk = maybeToList $ secret ^. usPrimKey
         secret' = secret & usKeys %~ (++ map noPassEncrypt sk)

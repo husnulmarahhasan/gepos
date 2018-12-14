@@ -7,18 +7,18 @@ loggerTree:
 
   handlers:
     - { name: "console"
-      , logsafety: PublicLogLevel
-      , severity: Error
+      , logsafety: SecretLogLevel
+      , severity: Debug
       , filepath: "stdout"
       , backend: StdoutBE }
     - { name: "JSON1"
       , filepath: "pub/node.json"
       , logsafety: PublicLogLevel
-      , severity: Trace+
+      , severity: Debug
       , backend: FileJsonBE }
     - { name: "JSON2"
       , filepath: "node.json"
       , logsafety: SecretLogLevel
-      , severity: Trace+
+      , severity: Debug
       , backend: FileJsonBE }
 
