@@ -20,7 +20,7 @@ import           Pos.Chain.Update (ApplicationName (ApplicationName),
                      BlockVersionModifier, SoftwareVersion (SoftwareVersion))
 import           Pos.DB.Class (gsAdoptedBVData)
 import           Pos.Infra.Diffusion.Types (Diffusion)
-import           Pos.Launcher (HasConfigurations, cfoSystemStart)
+import           Pos.Launcher (HasConfigurations, cfoSystemStart_L)
 import           Pos.Util.Wlog (logInfo)
 import           Serokell.Data.Memory.Units (Byte)
 import           Universum hiding (on)
@@ -89,15 +89,12 @@ main = do
     optionsMutator :: ScriptRunnerOptions -> IO ScriptRunnerOptions
     optionsMutator optsin = do
       print $ CLI.networkConfigOpts $ srCommonNodeArgs optsin
-      return $ optsin {
-          srCommonNodeArgs = (srCommonNodeArgs optsin) {
-            CLI.commonArgs = (CLI.commonArgs $ srCommonNodeArgs optsin) {
-              CLI.configurationOptions = (CLI.configurationOptions $ CLI.commonArgs $ srCommonNodeArgs optsin) {
-                cfoSystemStart = Just systemStartTs
-              }
-            }
-          }
-        }
+      return $ optsin
+             & srCommonNodeArgs_L
+             . CLI.commonArgs_L
+             . CLI.configurationOptions_L
+             . cfoSystemStart_L
+             .~ Just systemStartTs
     runScript' :: String -> ([NodeHandle],[NodeHandle]) -> IO ()
     runScript' stateDir (_,_) = do
       runScript optionsMutator $ return $ getScript $ test4 stateDir

@@ -8,8 +8,9 @@
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RankNTypes                 #-}
 {-# LANGUAGE TypeApplications           #-}
+{-# LANGUAGE TemplateHaskell       #-}
 
-module AutomatedTestRunner (Example, getGenesisConfig, loadNKeys, doUpdate, onStartup, on, getScript, runScript, ScriptRunnerOptions(..), endScript) where
+module AutomatedTestRunner (Example, getGenesisConfig, loadNKeys, doUpdate, onStartup, on, getScript, runScript, ScriptRunnerOptions(..), endScript, srCommonNodeArgs_L) where
 
 import           Brick hiding (on)
 import           Brick.BChan
@@ -74,14 +75,18 @@ import           Pos.Util.Wlog (LoggerName)
 import           Pos.WorkMode (EmptyMempoolExt, RealMode)
 import           Prelude (show)
 import           Universum hiding (on, state, when)
-
-class TestScript a where
-  getScript :: a -> Script
+import           Control.Lens (lens, makeLensesWith)
+import           Pos.Util (HasLens (lensOf), postfixLFields)
 
 data ScriptRunnerOptions = ScriptRunnerOptions
   { srCommonNodeArgs :: !CLI.CommonNodeArgs -- ^ Common CLI args for nodes
   , srPeers          :: ![NodeId]
   } deriving Show
+
+makeLensesWith postfixLFields ''ScriptRunnerOptions
+
+class TestScript a where
+  getScript :: a -> Script
 
 data ScriptBuilder = ScriptBuilder
   { sbScript        :: Script

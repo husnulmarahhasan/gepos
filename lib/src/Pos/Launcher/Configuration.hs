@@ -23,6 +23,11 @@ module Pos.Launcher.Configuration
 
        -- Exposed mostly for testing.
        , readAssetLockedSrcAddrs
+
+       , cfoFilePath_L
+       , cfoKey_L
+       , cfoSystemStart_L
+       , cfoSeed_L
        ) where
 
 import           Universum
@@ -54,6 +59,8 @@ import           Pos.Crypto (RequiresNetworkMagic (..))
 import           Pos.Util.AssertMode (inAssertMode)
 import           Pos.Util.Config (parseYamlConfig)
 import           Pos.Util.Wlog (WithLogger, logInfo)
+import           Control.Lens (makeLensesWith)
+import           Pos.Util (postfixLFields)
 
 import           Pos.Chain.Block
 import           Pos.Chain.Delegation
@@ -167,6 +174,8 @@ data ConfigurationOptions = ConfigurationOptions
       -- this case it overrides one from configuration file.
     , cfoSeed        :: !(Maybe Integer)
     } deriving (Show)
+
+makeLensesWith postfixLFields ''ConfigurationOptions
 
 instance FromJSON ConfigurationOptions where
     parseJSON = withObject "ConfigurationOptions" $ \o -> do
