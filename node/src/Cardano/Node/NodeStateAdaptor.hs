@@ -14,9 +14,6 @@ module Cardano.Node.NodeStateAdaptor (
   , SecurityParameter(..)
   , UnknownEpoch(..)
   , MissingBlock(..)
-    -- * Locking
-  , Lock
-  , LockContext(..)
     -- * Specific queries
   , getTipSlotId
   , getSecurityParameter
@@ -29,17 +26,6 @@ module Cardano.Node.NodeStateAdaptor (
   , getNodeSyncProgress
   , curSoftwareVersion
   , compileInfo
-    -- * Non-mockable
-  , mostRecentMainBlock
-  , triggerShutdown
-  , waitForUpdate
-  , defaultGetSlotStart
-    -- * Support for tests
-  , NodeStateUnavailable(..)
-  , MockNodeStateParams(..)
-  , mockNodeState
-  , mockNodeStateDef
-  , defMockNodeStateParams
   ) where
 
 import           Universum
@@ -53,10 +39,9 @@ import           Pos.Chain.Block (Block, HeaderHash, LastKnownHeader,
                      LastKnownHeaderTag, MainBlock, blockHeader, headerHash,
                      mainBlockSlot, prevBlockL)
 import           Pos.Chain.Genesis as Genesis (Config (..), GenesisHash (..),
-                     configBlockVersionData, configEpochSlots, configK)
-import           Pos.Chain.Update (ConfirmedProposalState,
-                     HasUpdateConfiguration, SoftwareVersion, bvdMaxTxSize,
-                     bvdTxFeePolicy)
+                     configEpochSlots, configK)
+import           Pos.Chain.Update (HasUpdateConfiguration, SoftwareVersion,
+                     bvdMaxTxSize, bvdTxFeePolicy)
 import qualified Pos.Chain.Update as Upd
 import           Pos.Context (NodeContext (..))
 import           Pos.Core (BlockCount, SlotCount, Timestamp (..), TxFeePolicy,
@@ -68,21 +53,17 @@ import           Pos.DB.BlockIndex (getTipHeader)
 import           Pos.DB.Class (MonadDBRead (..), getBlock)
 import           Pos.DB.GState.Lock (StateLock, withStateLockNoMetrics)
 import           Pos.DB.Rocks (NodeDBs, dbGetDefault, dbIterSourceDefault)
-import           Pos.DB.Update (UpdateContext, getAdoptedBVData,
-                     ucDownloadedUpdate)
+import           Pos.DB.Update (UpdateContext, getAdoptedBVData)
 import           Pos.Infra.Shutdown.Class (HasShutdownContext (..))
-import qualified Pos.Infra.Shutdown.Logic as Shutdown
 import qualified Pos.Infra.Slotting.Impl.Simple as S
 import qualified Pos.Infra.Slotting.Util as Slotting
 import           Pos.Launcher.Resource (NodeResources (..))
 import           Pos.Node.API (SecurityParameter (..))
 import           Pos.Util (CompileTimeInfo, HasCompileInfo, HasLens (..),
-                     lensOf', withCompileInfo)
+                     lensOf')
 import qualified Pos.Util as Util
 import           Pos.Util.Concurrent.PriorityLock (Priority (..))
 import           Pos.Util.Wlog (CanLog (..), HasLoggerName (..))
-import           Test.Pos.Configuration (withDefConfiguration,
-                     withDefUpdateConfiguration)
 
 {-------------------------------------------------------------------------------
   Additional types
@@ -430,26 +411,6 @@ defaultSyncProgress lockContext lock = do
              )
     return (max localHeight <$> globalHeight, localHeight)
 
-{-------------------------------------------------------------------------------
-  Non-mockable functions
--------------------------------------------------------------------------------}
-
-
-triggerShutdown :: MonadIO m => WithNodeState m ()
-triggerShutdown = Shutdown.triggerShutdown
-
--- | Wait for an update
---
--- NOTE: This is adopted from 'waitForUpdateWebWallet'. In particular, that
--- function too uses 'takeMVar'. I guess the assumption is that there is only
--- one listener on this 'MVar'?
-waitForUpdate :: forall m. MonadIO m => WithNodeState m ConfirmedProposalState
-waitForUpdate = liftIO . takeMVar =<< asks l
-  where
-    l :: Res -> MVar ConfirmedProposalState
-    l = ucDownloadedUpdate . view lensOf'
-
-
 -- | Get the most recent main block starting at the specified header
 --
 -- Returns nothing if there are no (regular) blocks on the blockchain yet.
@@ -484,93 +445,4 @@ mostRecentMainBlock genesisHash = go
         case mBlock of
           Nothing    -> throwM $ MissingBlock callStack hdrHash
           Just block -> return block
-
-{-------------------------------------------------------------------------------
-  Support for tests
--------------------------------------------------------------------------------}
-
--- | Thrown when using the 'nodeStateUnavailable' adaptor.
-data NodeStateUnavailable = NodeStateUnavailable CallStack
-  deriving (Show)
-
-instance Exception NodeStateUnavailable
-
--- | Node state adaptor for use in tests
---
--- See 'NodeStateAdaptor' for an explanation about what is and what is not
--- mockable.
-mockNodeState :: (HasCallStack, MonadThrow m)
-              => MockNodeStateParams -> NodeStateAdaptor m
-mockNodeState MockNodeStateParams{..} =
-    withDefConfiguration $ \genesisConfig ->
-    withDefUpdateConfiguration $
-    let genesisBvd = configBlockVersionData genesisConfig
-    in Adaptor {
-          withNodeState            = \_ -> throwM $ NodeStateUnavailable callStack
-        , getTipSlotId             = return mockNodeStateTipSlotId
-        , getSecurityParameter     = return mockNodeStateSecurityParameter
-        , getNextEpochSlotDuration = return mockNodeStateNextEpochSlotDuration
-        , getNodeSyncProgress      = \_ -> return mockNodeStateSyncProgress
-        , getSlotStart             = return . mockNodeStateSlotStart
-        , getMaxTxSize             = return $ bvdMaxTxSize genesisBvd
-        , getFeePolicy             = return $ bvdTxFeePolicy genesisBvd
-        , getSlotCount             = return $ configEpochSlots genesisConfig
-        , getCoreConfig            = return genesisConfig
-        , curSoftwareVersion       = return $ Upd.curSoftwareVersion Upd.updateConfiguration
-        , compileInfo              = return $ Util.compileInfo
-        }
-
--- | Variation on 'mockNodeState' that uses the default params
-mockNodeStateDef :: (HasCallStack, MonadThrow m) => NodeStateAdaptor m
-mockNodeStateDef = mockNodeState defMockNodeStateParams
-
--- | Parameters for 'mockNodeState'
---
--- NOTE: These values are intentionally not strict, so that we can provide
--- error values in 'defMockNodeStateParams'
-data MockNodeStateParams = NodeConstraints => MockNodeStateParams {
-        -- | Value for 'getTipSlotId'
-        mockNodeStateTipSlotId :: SlotId
-
-        -- | Value for 'getSlotSTart'
-      , mockNodeStateSlotStart :: SlotId -> Either UnknownEpoch Timestamp
-
-        -- | Value for 'getSecurityParameter'
-      , mockNodeStateSecurityParameter :: SecurityParameter
-
-        -- | Value for 'getNextEpochSlotDuration'
-      , mockNodeStateNextEpochSlotDuration :: Millisecond
-
-        -- | Value for 'getNodeSyncProgress'
-      , mockNodeStateSyncProgress :: (Maybe BlockCount, BlockCount)
-
-      }
-
--- | Default 'MockNodeStateParams'
---
--- NOTE:
---
--- * Most of the default parameters are error values
--- * The 'NodeConstraints' that come from the test configuration
--- * However, we set the security parameter to 2160 instead of taking that
---   from the test configuration, since in the test configuration @k@ is
---   assigned a really low value, which would cause us to throw away from
---   checkpoints during testing that we should not throw away.
-defMockNodeStateParams :: MockNodeStateParams
-defMockNodeStateParams =
-    withDefConfiguration $ \_pm ->
-    withDefUpdateConfiguration $
-    withCompileInfo $
-      MockNodeStateParams {
-          mockNodeStateTipSlotId             = notDefined "mockNodeStateTipSlotId"
-        , mockNodeStateSlotStart             = notDefined "mockNodeStateSlotStart"
-        , mockNodeStateNextEpochSlotDuration = notDefined "mockNodeStateNextEpochSlotDuration"
-        , mockNodeStateSyncProgress          = notDefined "mockNodeStateSyncProgress"
-        , mockNodeStateSecurityParameter     = SecurityParameter 2160
-        }
-  where
-    notDefined :: Text -> a
-    notDefined = error "defMockNodeStateParams: (? FIXME) not defined"
-    --error
-    --          . sformat ("defMockNodeStateParams: '" % build % "' not defined")
 
