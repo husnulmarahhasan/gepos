@@ -548,14 +548,74 @@ instance ToSchema (V1 Version) where
         pure $ NamedSchema (Just "V1Version") $ mempty
             & type_ .~ SwaggerString
 
+
+
+newtype SecurityParameter = SecurityParameter Int
+    deriving (Show, Eq, Generic, ToJSON, FromJSON, Arbitrary)
+
+
+instance Buildable SecurityParameter where
+    build (SecurityParameter i) = bprint shown i
+
+
+instance ToSchema SecurityParameter where
+    declareNamedSchema _ =
+        pure $ NamedSchema (Just "SecurityParameter") $ mempty
+            & type_ .~ SwaggerString
+
+
+
+
+instance Arbitrary Core.SlotId where
+    arbitrary = error "TODO"
+
+
+instance ToSchema (Core.SlotId) where
+    declareNamedSchema _ =
+        pure $ NamedSchema (Just "Core.SlotId") $ mempty
+            & type_ .~ SwaggerString
+
+
+instance ToSchema Byte where
+    declareNamedSchema _ =
+        pure $ NamedSchema (Just "Byte") $ mempty
+            & type_ .~ SwaggerString
+
+instance Buildable Byte where
+    build b = bprint shown b
+
+
+
+instance Arbitrary Core.TxFeePolicy where
+    arbitrary = error "TODO"
+
+
+instance ToSchema (Core.TxFeePolicy) where
+    declareNamedSchema _ =
+        pure $ NamedSchema (Just "Core.TxFeePolicy") $ mempty
+            & type_ .~ SwaggerString
+
+instance Arbitrary Core.SlotCount where
+    arbitrary = error "TODO"
+
+instance ToSchema (Core.SlotCount) where
+    declareNamedSchema _ =
+        pure $ NamedSchema (Just "Core.SlotCount") $ mempty
+            & type_ .~ SwaggerString
+
 -- | The @static@ settings for this wallet node. In particular, we could group
 -- here protocol-related settings like the slot duration, the transaction max size,
 -- the current software version running on the node, etc.
 data NodeSettings = NodeSettings
-    { setSlotDuration   :: !SlotDuration
-    , setSoftwareInfo   :: !(V1 Core.SoftwareVersion)
-    , setProjectVersion :: !(V1 Version)
-    , setGitRevision    :: !Text
+    { setSlotId            :: !(Core.SlotId)
+    , setSlotDuration      :: !SlotDuration
+    , setSlotCount         :: !Core.SlotCount
+    , setSoftwareInfo      :: !(V1 Core.SoftwareVersion)
+    , setProjectVersion    :: !(V1 Version)
+    , setGitRevision       :: !Text
+    , setMaxTxSize         :: !Byte
+    , setFeePolicy         :: !Core.TxFeePolicy
+    , setSecurityParameter :: !SecurityParameter
     } deriving (Show, Eq, Generic)
 
 deriveJSON Aeson.defaultOptions ''NodeSettings
@@ -563,66 +623,54 @@ deriveJSON Aeson.defaultOptions ''NodeSettings
 instance ToSchema NodeSettings where
   declareNamedSchema =
     genericSchemaDroppingPrefix "set" (\(--^) props -> props
-      & ("slotDuration"   --^ "Duration of a slot.")
-      & ("softwareInfo"   --^ "Various pieces of information about the current software.")
-      & ("projectVersion" --^ "Current project's version.")
-      & ("gitRevision"    --^ "Git revision of this deployment.")
+      & ("slotId"             --^ "The current slot and epoch.")
+      & ("slotDuration"       --^ "Duration of a slot.")
+      & ("slotCount"          --^ "The number of slots per epoch.")
+      & ("softwareInfo"       --^ "Various pieces of information about the current software.")
+      & ("projectVersion"     --^ "Current project's version.")
+      & ("gitRevision"        --^ "Git revision of this deployment.")
+      & ("maxTxSize"          --^ "The largest allowed transaction size")
+      & ("feePolicy"          --^ "The fee policy.")
+      & ("securityParameter"  --^ "The security parameter.")
     )
 
 instance Arbitrary NodeSettings where
     arbitrary = NodeSettings <$> arbitrary
                              <*> arbitrary
                              <*> arbitrary
+                             <*> arbitrary
+                             <*> arbitrary
                              <*> pure "0e1c9322a"
+                             <*> arbitrary
+                             <*> arbitrary
+                             <*> arbitrary
 
 instance Example NodeSettings
 
 deriveSafeBuildable ''NodeSettings
 instance BuildableSafeGen NodeSettings where
     buildSafeGen _ NodeSettings{..} = bprint ("{"
+        %" slotId="%build
         %" slotDuration="%build
+        %" slotCount="%build
         %" softwareInfo="%build
         %" projectRevision="%build
         %" gitRevision="%build
+        %" maxTxSize="%build
+        %" feePolicy="%build
+        %" securityParameter="%build
         %" }")
+        setSlotId
         setSlotDuration
+        setSlotCount
         setSoftwareInfo
         setProjectVersion
         setGitRevision
+        setMaxTxSize
+        setFeePolicy
+        setSecurityParameter
 
 
-newtype SecurityParameter = SecurityParameter Int
-    deriving (Generic, ToJSON, FromJSON)
-
-data ProtocolParameters = ProtocolParameters
-    { slotId            :: Core.SlotId
-    , maxTxSize         :: Byte
-    , feePolicy         :: Core.TxFeePolicy
-    , securityParameter :: SecurityParameter
-    , slotCount         :: Core.SlotCount
-    --, coreConfig        :: Genesis.Config
-    } deriving (Generic)
-
-deriveSafeBuildable ''ProtocolParameters
-instance BuildableSafeGen ProtocolParameters where
-    buildSafeGen _ ProtocolParameters{..} = bprint ("{"
-        %" slotId="%build
---        %" maxTxSize="%build
-        %" feePolicy="%build
---        %" securityParameter="%build
-        %" slotCount="%build
-        %" }")
-        slotId
---        maxTxSize
-        feePolicy
---      securityParameter
-        slotCount
-
-instance ToJSON ProtocolParameters
-instance FromJSON ProtocolParameters
-
-instance ToSchema ProtocolParameters where
-    declareNamedSchema = error "TODO"
 
 type SettingsAPI =
     Tags '["Settings"]
@@ -641,20 +689,12 @@ instance HasCustomQueryFlagDescription "force_ntp_check" where
     customDescription _ = Just forceNtpCheckDescription
 
 
-type ProtocolParametersAPI =
-        Tags '["ProtocolParameters"]
-            :> "protocol-parameters"
-            :> Summary "Retrieves epoch-specific protocol parametes for this node."
-            :> Get '[ValidJSON] (APIResponse ProtocolParameters)
-
 -- The API definition is down here for now due to TH staging restrictions. Will
 -- relocate other stuff into it's own module when the extraction is complete.
 type API =
         SettingsAPI
     :<|>
         InfoAPI
-    :<|>
-        ProtocolParametersAPI
     :<|>
         "update"
             :> ( "apply"
